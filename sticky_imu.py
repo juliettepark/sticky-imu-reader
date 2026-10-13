@@ -175,6 +175,7 @@ async def stream(device: BLEDevice, csv_path: Path) -> None:
             nonlocal calibration_start_ms, calibration_window_passed
             for sample in parse_imu_packet(bytes(data)):
                 timestamp_ms = sample[0]
+                already_passed = calibration_window_passed
                 if calibration_start_ms is None:
                     calibration_start_ms = timestamp_ms
                 elif (
@@ -195,7 +196,8 @@ async def stream(device: BLEDevice, csv_path: Path) -> None:
                     )
                 )
                 csv_file.flush()
-                print(format_sample(sample))
+                if already_passed:
+                    print(format_sample(sample))
 
         async with BleakClient(device) as client:
             if not client.is_connected:
