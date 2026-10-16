@@ -34,6 +34,25 @@ python sticky_imu.py --name STICKY-SENSE-A1B2C3
 
 `--output path.csv` chooses the CSV path. `--scan-seconds 15` listens longer.
 
+## Recording summary
+
+When recording stops with Ctrl-C or a disconnect, the script prints a summary:
+sample count, firmware duration, effective sample rate, timestamp gaps, estimated
+missing samples, malformed packets, possible saturation, and whether the opening
+2-second calibration hold passed the existing stillness checks. A passing hold
+also reports gyro bias; the raw CSV remains unchanged.
+
+Missing-sample estimates assume 100 Hz. Possible saturation means an axis reached
+99% of the assumed ±16 g or ±2000 °/s range; it is not a hardware saturation flag.
+Duplicate or backward timestamps flag timing estimates as unreliable, and gaps
+in the calibration hold leave its status unverified.
+
+Run the hardware-free smoke tests with simulated BLE packets:
+
+```bash
+python3 -m unittest discover -s . -p smoke_test.py -v
+```
+
 ## Calibrate
 
 Check the opening 2 seconds and print the gyro bias. This does not change the CSV.

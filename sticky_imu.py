@@ -19,6 +19,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from recording_summary import RecordingSummary
+
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
@@ -113,15 +115,16 @@ async def find_sensing_sticky(timeout: float, name: str | None) -> BLEDevice | N
 
 def parse_imu_packet(data: bytes) -> list[tuple]:
     """Return scaled samples from one IMU notification, or an empty list."""
+    global _bad_packet_count
     if not data:
+        _bad_packet_count += 1
         return []
 
     sample_count = data[0]
     expected = 1 + IMU_SAMPLE_BYTES * sample_count
 
     # Detect if packet is not the expected size
-    if sample_count == 0 or len(data) != expected:
-        global _bad_packet_count
+    if not 1 <= sample_count <= 12 or len(data) != expected:
         _bad_packet_count += 1
         if _bad_packet_count == 1 or _bad_packet_count % 100 == 0:
             print(
@@ -161,7 +164,7 @@ def format_sample(sample: tuple) -> str:
     )
 
 
-async def stream(device: BLEDevice, csv_path: Path) -> None:
+async def _stream(device: BLEDevice, csv_path: Path, summary: RecordingSummary) -> None:
     with csv_path.open("w", newline="") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(CSV_HEADER)
@@ -174,6 +177,7 @@ async def stream(device: BLEDevice, csv_path: Path) -> None:
         def on_imu(_characteristic, data: bytearray) -> None:
             nonlocal calibration_start_ms, calibration_window_passed
             for sample in parse_imu_packet(bytes(data)):
+                summary.add(sample)
                 timestamp_ms = sample[0]
                 already_passed = calibration_window_passed
                 if calibration_start_ms is None:
@@ -219,6 +223,16 @@ async def stream(device: BLEDevice, csv_path: Path) -> None:
                 # Unsubscribe from notifications when we're done
                 if client.is_connected:
                     await client.stop_notify(IMU_DATA_UUID)
+
+
+async def stream(device: BLEDevice, csv_path: Path) -> None:
+    summary = RecordingSummary()
+    bad_packets_at_start = _bad_packet_count
+    try:
+        await _stream(device, csv_path, summary)
+    finally:
+        # Runs after notification cleanup and CSV close, including Ctrl-C cancellation.
+        print("\n" + summary.report(_bad_packet_count - bad_packets_at_start))
 
 
 def build_parser() -> argparse.ArgumentParser:
