@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 
 CSV_HEADER = ("t_fw_ms", "ax_g", "ay_g", "az_g", "gx_dps", "gy_dps", "gz_dps")
+# Laptop time for a sample. Present on dual-sticky recordings, absent on older files.
+# Calibration does not use it; pairing the ball and the hand does.
+HOST_TIME_COLUMN = "t_host"
 
 # Constants for what we accept as a still window
 CALIBRATION_WINDOW_MS = 2000
@@ -24,11 +27,20 @@ GRAVITY_MIN_G = 0.9
 GRAVITY_MAX_G = 1.1
 
 
-# Read the CSV into one tuple per row: time, acceleration, then rotation rate.
+# Read the CSV into one tuple per row: firmware time, acceleration, then rotation rate.
+# t_host may sit beside those columns. It is the laptop time used to line up two
+# stickies, so this loader accepts it and leaves it out of the tuple. The hold
+# check and Madgwick both keep using t_fw_ms, the sticky's own clock.
 def load_samples(path: Path) -> list[tuple[float, ...]]:
     with path.open(newline="") as csv_file:
         reader = csv.DictReader(csv_file)
-        if reader.fieldnames is None or tuple(reader.fieldnames) != CSV_HEADER:
+        fieldnames = reader.fieldnames
+        if fieldnames is None:
+            raise ValueError(f"{path} does not have the sticky IMU columns {','.join(CSV_HEADER)}")
+        # Every measurement column is required. t_host is the only extra column allowed.
+        missing = [column for column in CSV_HEADER if column not in fieldnames]
+        unexpected = [column for column in fieldnames if column not in CSV_HEADER and column != HOST_TIME_COLUMN]
+        if missing or unexpected:
             raise ValueError(f"{path} does not have the sticky IMU columns {','.join(CSV_HEADER)}")
         samples = []
         for row in reader:
