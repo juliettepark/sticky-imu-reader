@@ -1,11 +1,11 @@
 # Sticky IMU readout
 
-Record a sensing sticky over Bluetooth Low Energy, then estimate orientation from that recording. The sticky streams at its default 100 Hz. These scripts do not change its config and do not subscribe to tactile data.
+Record one sensing sticky, or the ball and hand stickies together, over Bluetooth Low Energy. Orientation is estimated after the recording. Each sticky streams at its default 100 Hz. These scripts do not change its config and do not subscribe to tactile data.
 
-Recording and calibration use Python 3.10 or newer and `bleak`. Orientation also uses `ahrs`.
+Recording uses Python 3.10 or newer and `bleak`. Orientation also uses `ahrs`. The cube view uses `matplotlib`.
 
 ```bash
-pip install bleak ahrs
+pip install bleak ahrs matplotlib
 ```
 
 ## Before you record
@@ -18,29 +18,55 @@ Turn the sticky on.
 
 <!-- The phone companion app can hold the only Bluetooth connection. Quit it before running this script. macOS will ask for Bluetooth permission the first time. -->
 
-## Record
+## Record the ball and the hand
+
+The ball is `STICKY-SENSE-07058C`. The hand is `STICKY-SENSE-57FCFE`.
 
 ```bash
 python sticky_imu.py
 ```
 
-The script scans for about 8 seconds and connects to the first `STICKY-SENSE` device it hears. It prints `Hold the sticky still.` Hold it steady until it prints `Calibration window has passed.` That message means the sticky’s clock has moved 2 seconds from the first sample. Then move the sticky. Each sample is printed, and the raw stream is written to `imu_YYYYMMDD_HHMMSS.csv` in the current directory. Stop with Ctrl-C.
+The script scans for about 8 seconds and connects to both stickies before the hold starts. It prints `Hold both stickies still.` Hold both steady until it prints `Ball calibration window has passed.` and `Hand calibration window has passed.` Each window is 2 seconds on that sticky’s own clock, from its first sample. Then move them. Sample lines are prefixed with `ball` or `hand`.
 
-If more than one sensing sticky is nearby:
+Press Ctrl-C once, then wait. The script prints a summary for each sticky, runs Madgwick, and writes the combined files. It is finished when it prints `Writing .../combined.csv` and `Writing .../calibration.csv`. A second Ctrl-C during that wait stops the sync before those files are saved.
+
+One recording creates a folder, `imu_YYYYMMDD_HHMMSS/`:
+
+| File | Contents |
+| --- | --- |
+| `ball.csv`, `hand.csv` | Every sample from that sticky, including `t_host` |
+| `combined.csv` | One row per ball sample, with the hand sample from that laptop time and both quaternions |
+| `calibration.csv` | The gyro bias and starting quaternion passed into Madgwick for each sticky |
+
+`t_fw_ms` is the sticky’s own clock, in milliseconds since that sticky booted. `t_host` is the laptop time of the sample. Inside one Bluetooth packet, the last sample keeps the arrival time and earlier samples are stepped backward by their firmware gaps. The two stickies can then share one clock even though each firmware clock starts at its own boot.
+
+The ball decides the rows in `combined.csv`. The hand columns are the latest hand sample at or before that ball time. If none exists yet, those columns are empty. Quaternion cells are empty during that sticky’s hold. A hold that is missing or not still still leaves a row in `calibration.csv`, with the number columns empty, and the sensor columns in `combined.csv` are still filled.
+
+Rebuild the combined files from a folder that already has `ball.csv` and `hand.csv`:
+
+```bash
+python sync_imu.py imu_YYYYMMDD_HHMMSS
+```
+
+`--scan-seconds 15` listens longer. `--output some_folder` chooses the recording folder.
+
+## Record one sticky
 
 ```bash
 python sticky_imu.py --name STICKY-SENSE-A1B2C3
 ```
 
-`--output path.csv` chooses the CSV path. `--scan-seconds 15` listens longer.
+This connects to that sticky only. It prints `Hold the sticky still.` Hold it steady until it prints `Calibration window has passed.` Then move it. The raw stream is written to `imu_YYYYMMDD_HHMMSS.csv` in the current directory, without `t_host`. Stop with Ctrl-C.
+
+`--output path.csv` chooses that CSV path.
 
 ## Recording summary
 
-When recording stops with Ctrl-C or a disconnect, the script prints a summary:
+When recording stops with Ctrl-C or a disconnect, the script prints a summary for each sticky:
 sample count, firmware duration, effective sample rate, timestamp gaps, estimated
 missing samples, malformed packets, possible saturation, and whether the opening
 2-second calibration hold passed the existing stillness checks. A passing hold
-also reports gyro bias; the raw CSV remains unchanged.
+also reports gyro bias. The raw CSV is not changed by the summary.
 
 Missing-sample estimates assume 100 Hz. Possible saturation means an axis reached
 99% of the assumed ±16 g or ±2000 °/s range; it is not a hardware saturation flag.
@@ -71,7 +97,23 @@ Use that same hold as the start of a Madgwick filter, then write one quaternion 
 python orient_imu.py imu_YYYYMMDD_HHMMSS.csv
 ```
 
-This prints the gyro bias and the starting quaternion `(w, x, y, z)`, and writes `imu_YYYYMMDD_HHMMSS_orientation.csv` next to the recording. The hold rows are not in that file. The first written row is already a Madgwick update from the end of the hold. A bad hold prints the same error as calibration and writes no file.
+This prints the gyro bias and the starting quaternion `(w, x, y, z)`, and writes `imu_YYYYMMDD_HHMMSS_orientation.csv` next to the recording. The hold rows are not in that file. The first written row is already a Madgwick update from the end of the hold. A bad hold prints the same error as calibration and writes no file. A dual-recording folder already contains both quaternions in `combined.csv`; this command is for a single-sticky CSV.
+
+## View
+
+Play one orientation CSV:
+
+```bash
+python visualize_orientation.py imu_YYYYMMDD_HHMMSS_orientation.csv
+```
+
+Play the ball and the hand from a recording folder. Both cubes follow `t_host`. During a hold, a cube stays at that sticky’s starting quaternion from `calibration.csv`.
+
+```bash
+python visualize_orientation.py imu_YYYYMMDD_HHMMSS
+```
+
+`--save` writes a GIF beside a single CSV, or `orientation.gif` inside the folder. Close the window to stop.
 
 ## What is in the CSV
 
@@ -88,6 +130,8 @@ The orientation file keeps those seven columns and adds:
 | Column | Meaning |
 | --- | --- |
 | `qw`, `qx`, `qy`, `qz` | Orientation after the hold, relative to up. Yaw 0 is the direction the sticky faced during calibration. |
+
+`ball.csv` and `hand.csv` add `t_host`, the laptop datetime of that sample. `combined.csv` uses the ball sample’s `t_host` as the row time and prefixes the measurement and quaternion columns with `ball_` and `hand_`. `hand_t_host` is the matched hand sample’s own laptop time. `calibration.csv` has one row per sticky: `sticky`, `bx_dps`, `by_dps`, `bz_dps`, `qw`, `qx`, `qy`, `qz`.
 
 ## How the packets are decoded
 
